@@ -183,3 +183,59 @@ class QRDQN(DQN):
         obs, state = super().forward(obs)
         obs = obs.view(-1, self.action_num, self.num_quantiles)
         return obs, state
+
+
+class DRQN(DQN):
+    """Recurrent version of ``Nature head``. Need to use with
+    :class:`~tianshou.utils.net.common.Actor` and :class:`~tianshou.utils.net.common.Critic`.
+    For advanced usage (how to customize the network), please refer to
+    :ref:`build_the_network`.
+    """
+
+    def __init__(
+        self,
+        c: int,
+        h: int,
+        w: int,
+        action_shape: Sequence[int],
+        recurrent_input_size: int = 512,
+        recurrent_layer_size: int = 128,
+        recurrent_layer_num: int = 1,
+        device: Union[str, int, torch.device] = "cpu",
+    ) -> None:
+        super().__init__(
+            c,
+            h,
+            w,
+            action_shape,
+            device,
+            features_only=True,
+            output_dim=recurrent_input_size
+        )
+        self.recurrent = nn.LSTM(
+            recurrent_input_size, recurrent_layer_size, recurrent_layer_num
+        )
+        self.output_dim = recurrent_layer_size
+
+    def forward(
+        self,
+        obs: Union[np.ndarray, torch.Tensor],
+        state: Optional[Any] = None,
+        info: Dict[str, Any] = {},
+    ) -> Tuple[torch.Tensor, Any]:
+        r"""Mapping: s -> Q(s, \*)."""
+        # expecting obs.shape: (bzs, 1, h, w)
+        obs = torch.as_tensor(obs, device=self.device, dtype=torch.float32)
+        if len(obs.shape) == 3:
+            obs = obs.unsqueeze(1)
+        obs = self.net(obs)  # output shape: (bzs, recurrent_input_size)
+        if state is None:
+            obs, (hidden, cell) = self.recurrent(obs.unsqueeze(0))
+        else:
+            obs, (hidden, cell) = self.recurrent(
+                obs.unsqueeze(0),
+                (state["hidden"].transpose(0, 1).contiguous(), state["cell"].transpose(0, 1).contiguous())
+            )
+        logits = obs[0]  # input shape: (1, bzs, recurrent_layer_size)
+        # {hidden,cell}.shape: (recurrent_layer_num, bzs, recurrent_layer_size)
+        return logits, {"hidden": hidden.transpose(0, 1).contiguous(), "cell": cell.transpose(0, 1).contiguous()}

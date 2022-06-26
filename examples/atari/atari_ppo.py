@@ -5,7 +5,7 @@ import pprint
 
 import numpy as np
 import torch
-from atari_network import DQN
+from atari_network import DQN, DRQN
 from atari_wrapper import make_atari_env
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.tensorboard import SummaryWriter
@@ -16,7 +16,7 @@ from tianshou.trainer import onpolicy_trainer
 from tianshou.utils import TensorboardLogger, WandbLogger
 from tianshou.utils.net.common import ActorCritic
 from tianshou.utils.net.discrete import Actor, Critic, IntrinsicCuriosityModule
-from tianshou.utils.net.common import Recurrent
+
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -85,10 +85,29 @@ def get_args():
         default=0.2,
         help="weight for the forward model loss in ICM"
     )
+    parser.add_argument(
+        "--recurrent-layer-num", type=int, default=2, help="number of recurrent layer"
+    )
+    parser.add_argument(
+        "--recurrent-input-size",
+        type=int,
+        default=512,
+        help="input size for the recurrent layer"
+    )
+    parser.add_argument(
+        "--recurrent-layer-size",
+        type=int,
+        default=128,
+        help="size for for recurrent layer"
+    )
     return parser.parse_args()
 
 
 def test_ppo(args=get_args()):
+    if args.recurrent_layer_num > 0:
+        if args.frames_stack > 1:
+            print("Frame stack will be set to 1 when using recurrent layer.")
+        args.frames_stack = 1
     env, train_envs, test_envs = make_atari_env(
         args.task,
         args.seed,
@@ -106,15 +125,23 @@ def test_ppo(args=get_args()):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     # define model
-    # net = DQN(
-    #     *args.state_shape,
-    #     args.action_shape,
-    #     device=args.device,
-    #     features_only=True,
-    #     output_dim=args.hidden_size
-    # )
-    net = Recurrent(2, args.state_shape, args.action_shape,
-                    args.device).to(args.device)
+    if args.recurrent_layer_num > 0:
+        net = DRQN(
+            *args.state_shape,
+            args.action_shape,
+            recurrent_input_size=args.recurrent_input_size,
+            recurrent_layer_size=args.recurrent_layer_size,
+            recurrent_layer_num=args.recurrent_layer_num,
+            device=args.device
+        )
+    else:
+        net = DQN(
+            *args.state_shape,
+            args.action_shape,
+            device=args.device,
+            features_only=True,
+            output_dim=args.hidden_size
+        )
     actor = Actor(net, args.action_shape, device=args.device, softmax_output=False)
     critic = Critic(net, device=args.device)
     optim = torch.optim.Adam(ActorCritic(actor, critic).parameters(), lr=args.lr)
@@ -155,11 +182,9 @@ def test_ppo(args=get_args()):
         recompute_advantage=args.recompute_adv,
     ).to(args.device)
     if args.icm_lr_scale > 0:
-        # feature_net = DQN(
-        #     *args.state_shape, args.action_shape, args.device, features_only=True
-        # )
-        feature_net = Recurrent(2, args.state_shape, args.action_shape,
-                    args.device).to(args.device)
+        feature_net = DQN(
+            *args.state_shape, args.action_shape, args.device, features_only=True
+        )
         action_dim = np.prod(args.action_shape)
         feature_dim = feature_net.output_dim
         icm_net = IntrinsicCuriosityModule(
@@ -193,7 +218,11 @@ def test_ppo(args=get_args()):
 
     # log
     now = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
-    args.algo_name = "ppo_icm" if args.icm_lr_scale > 0 else "ppo"
+    args.algo_name = "ppo"
+    if args.recurrent_layer_num > 0:
+        args.algo_name += "_lstm"
+    if args.icm_lr_scale > 0:
+        args.algo_name += "_icm"
     log_name = os.path.join(args.task, args.algo_name, str(args.seed), now)
     log_path = os.path.join(args.logdir, log_name)
 
